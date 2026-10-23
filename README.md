@@ -5,7 +5,8 @@
 Live Yahoo Fantasy Football league scoreboards in Home Assistant, with three bundled Lovelace cards.
 
 > The data source, coordinator, scoring-play engine and all three cards are implemented.
-> Yahoo can reject anonymous access with HTTP 401/403, preventing league setup and updates.
+> Yahoo can reject anonymous access with HTTP 401/403. An optional signed-in Yahoo session
+> cookie can authorize league setup and updates without a developer application.
 > See [Yahoo access errors](#yahoo-access-errors) before assuming an installation or league-id problem.
 
 ## Features
@@ -32,9 +33,10 @@ Live Yahoo Fantasy Football league scoreboards in Home Assistant, with three bun
 ## How it gets the data
 
 It requests Yahoo's **GameChannel** tier, also used by `sports.yahoo.com/nfl/gamechannel/`.
-The integration does not implement Yahoo sign-in, OAuth or API-key configuration. It can read
-public and private leagues only when Yahoo permits anonymous access to this tier; availability
-is not guaranteed for every league or network.
+The integration does not automate Yahoo sign-in or implement OAuth/API-key configuration.
+It can use anonymous access where Yahoo permits it, or a manually supplied Yahoo session
+cookie for an account that can access the league. Availability is not guaranteed for every
+league or network.
 
 - `pub-api.fantasysports.yahoo.com/fantasy/v3/redzone/nfl?league_id=…` — teams, rosters, matchups,
   per-player projections, and your league's own scoring modifiers.
@@ -131,17 +133,51 @@ the URL to add instead.)
 
 ### Yahoo access errors
 
-If setup says **Yahoo refused access to its league data (HTTP 401/403)**, the request reached
-Yahoo but was rejected. One observed response is **Unable to retrieve cookie.** This is distinct
-from a timeout, a rate limit, a server failure or a malformed league id. The integration does not
-currently provide a Yahoo session/login flow to resolve that refusal. Reinstalling or repeatedly
-submitting the same id is unlikely to help.
+If setup says **Yahoo refused anonymous access (HTTP 401/403)**, the request reached Yahoo
+but was rejected. One observed response is **Unable to retrieve cookie.** This is distinct
+from a timeout, a rate limit, a server failure or a malformed league id. Supply a Yahoo session
+using the optional setup field below. Reinstalling or repeatedly submitting the same id does
+not authenticate the request.
 
 Setup and polling now share HTTP access-error classification. Only the recognized cookie error
 is translated into a fixed diagnostic; arbitrary response bodies and cookie values are not logged.
-This improves diagnosis, **not authentication**. It does not bypass Yahoo's access controls or
-claim that fetching a public page first restores access. A verified supported authorization route
-or upstream endpoint fix is still needed for affected installations.
+Anonymous requests are not silently retried with another identity. Session authentication is
+used only when the user explicitly supplies a credential. Merely fetching a public page first
+does not establish a signed-in session.
+
+### Using your Yahoo login session
+
+This is an optional browser-session method, **not the approved developer API/OAuth route**.
+It does not need a developer app, and HA never receives your Yahoo password or handles MFA.
+Your browser must already be signed into a Yahoo account that can open the league.
+
+1. While signed in, open the league data endpoint in that browser (replace `726304` with your id):
+   `https://pub-api.fantasysports.yahoo.com/fantasy/v3/redzone/nfl?league_id=726304&format=json&player_image_type=17`.
+   Confirm that it shows the correct league rather than an error.
+2. Open browser Developer Tools → **Network**, reload that page, and select its `redzone` request.
+   Under **Headers → Request Headers**, copy the value of **Cookie**. Copy only that header's
+   value, not all request headers, and do not use a response `Set-Cookie` header.
+3. In HA's Yahoo Fantasy Football setup, enter the league id and paste the value into the masked
+   **Yahoo session cookie (optional)** field. Submit, then choose your team. Do not send the
+   cookie through chat, email, screenshots, Git commits or issue reports.
+
+**The cookie is a login secret, comparable to a password.** HA stores it in the config entry,
+like other integration credentials; a masked field is not encryption at rest. Protect HA's
+configuration and backups. Only recognized Yahoo session cookie names are kept; analytics
+and preference cookies are discarded. Requests send the cookie only to the HTTPS Yahoo
+NFL league-data endpoint, never ESPN, relay feeds or image hosts. Redirects from credentialed
+requests are not followed, and authenticated requests use a dedicated HTTP session rather
+than HA's shared cookie jar. Diagnostic downloads redact the credential.
+
+When Yahoo expires/revokes the session, HA asks you to **Reauthenticate**. Sign in to Yahoo
+again and replace the cookie there. You can also choose **Reconfigure** on the integration
+entry to replace it proactively. Your league, team, entry identity and existing dashboards
+are preserved. The integration cannot refresh browser sessions itself; logging out of Yahoo
+or Yahoo's security checks may require manual renewal. An account that loses league access
+can receive the same refusal as an expired session.
+
+This endpoint is undocumented and can change. OAuth with approved Yahoo Fantasy API access
+is a separate future option, not an automatic fallback for session expiration.
 
 ### League and team
 

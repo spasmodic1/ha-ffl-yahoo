@@ -51,6 +51,7 @@ import logging
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 
+from .http_client import YahooAccessDenied
 from .web_client import (  # noqa: F401  (LeagueIsPrivate re-exported for callers)
     STALE_AFTER_SECONDS,
     FetchFailed,
@@ -483,6 +484,10 @@ class RedzoneClient:
         """
         try:
             return await self.async_refresh(now)
+        except YahooAccessDenied:
+            # Rejected credentials need reauthentication, not a stale-data
+            # fallback which would hide the refusal from the coordinator.
+            raise
         except YahooWebError as err:
             stale = self._last_good
             if stale is None:

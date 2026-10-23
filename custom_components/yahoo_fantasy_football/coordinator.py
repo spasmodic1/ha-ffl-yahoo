@@ -19,7 +19,8 @@ from typing import Any
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.aiohttp_client import async_create_clientsession, async_get_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -35,7 +36,7 @@ from .const import (
     SCAN_INTERVAL_LIVE_SECONDS,
 )
 from .history_client import PlayerNotRostered, SeasonHistory
-from .http_client import fetch_text
+from .http_client import YahooAccessDenied, fetch_text
 from .league_state import down_and_distance, find_team, poll_interval
 from .pending_plays import Landed, PendingPlays, period_end_not_reached, situation_of
 from .plays import (
@@ -49,6 +50,7 @@ from .plays import (
 )
 from .redzone_client import USER_AGENT, RedzoneClient
 from .score_banners import ScoreBanners
+from .session_auth import CONF_SESSION_COOKIE
 from .web_client import LeagueData, LeagueIsPrivate, YahooWebError
 from .yahoo_redzone import RelayPlay, humanize_play, parse_relay_plays, play_ids_needed, to_snapshot
 
@@ -110,10 +112,13 @@ class YahooFantasyCoordinator(DataUpdateCoordinator[LeagueData]):
         season = entry.data.get(CONF_SEASON)
         self.season = int(season) if season else None
 
-        session = async_get_clientsession(hass)
+        session_cookie = entry.data.get(CONF_SESSION_COOKIE, "")
+        session = async_create_clientsession(hass) if session_cookie else async_get_clientsession(hass)
 
         async def _fetch(url: str) -> str:
-            body, _ = await fetch_text(session, url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
+            body, _ = await fetch_text(
+                session, url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT, session_cookie=session_cookie
+            )
             return body or ""
 
         async def _fetch_if_modified(url: str, since: str | None) -> tuple[str | None, str]:
@@ -121,24 +126,29 @@ class YahooFantasyCoordinator(DataUpdateCoordinator[LeagueData]):
             if since:
                 headers["If-Modified-Since"] = since
             body, modified = await fetch_text(
-                session, url, headers=headers, timeout=REQUEST_TIMEOUT, allow_not_modified=True
+                session,
+                url,
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+                allow_not_modified=True,
+                session_cookie=session_cookie,
             )
             return body, (since or "") if body is None else modified
 
         async def _fetch_with(url: str, headers: dict[str, str] | None) -> str:
             body, _ = await fetch_text(
-                session, url, headers={"User-Agent": USER_AGENT, **(headers or {})}, timeout=REQUEST_TIMEOUT
+                session,
+                url,
+                headers={"User-Agent": USER_AGENT, **(headers or {})},
+                timeout=REQUEST_TIMEOUT,
+                session_cookie=session_cookie,
             )
             return body or ""
 
-        self.client = RedzoneClient(
-            _fetch, self.league_id, fetch_if_modified=_fetch_if_modified
-        )
+        self.client = RedzoneClient(_fetch, self.league_id, fetch_if_modified=_fetch_if_modified)
         # A player's season, opened from the lineup. Finished weeks' projections are saved with
         # the entry so a restart does not fetch a whole season's seeds again.
-        self._season_store: Store = Store(
-            hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.season"
-        )
+        self._season_store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.season")
         self.history = SeasonHistory(_fetch_with, self.league_id, save=self._save_season)
         self.feed = PlayFeed()
         self._previous = None
@@ -198,17 +208,10 @@ class YahooFantasyCoordinator(DataUpdateCoordinator[LeagueData]):
         if data is None:
             raise PlayerNotRostered(player_id)
         live = next(
-            (
-                p.points
-                for matchup in data.matchups
-                for p in matchup.players
-                if str(p.player_id) == str(player_id)
-            ),
+            (p.points for matchup in data.matchups for p in matchup.players if str(p.player_id) == str(player_id)),
             None,
         )
-        return await self.history.player(
-            str(player_id), int(data.week), live, dt_util.utcnow().timestamp()
-        )
+        return await self.history.player(str(player_id), int(data.week), live, dt_util.utcnow().timestamp())
 
     async def _async_save_history(self) -> None:
         try:
@@ -220,6 +223,10 @@ class YahooFantasyCoordinator(DataUpdateCoordinator[LeagueData]):
         now = dt_util.utcnow().timestamp()
         try:
             data = await self.client.async_refresh_or_stale(now)
+        except YahooAccessDenied as err:
+            if err.session_supplied:
+                raise ConfigEntryAuthFailed(str(err)) from err
+            raise UpdateFailed(str(err)) from err
         except LeagueIsPrivate as err:
             # This tier has no such condition, but the taxonomy is shared with
             # the HTML source, so the branch stays rather than becoming a
@@ -247,9 +254,7 @@ class YahooFantasyCoordinator(DataUpdateCoordinator[LeagueData]):
         }
         self._banners.observe(games, now, floors)
 
-    async def _refresh_nfl_last_plays(
-        self, data: LeagueData, now: float, only: Iterable[str] | None = None
-    ) -> bool:
+    async def _refresh_nfl_last_plays(self, data: LeagueData, now: float, only: Iterable[str] | None = None) -> bool:
         """Newest play text for each LIVE NFL game, for the games card.
 
         Live games only. A finished game's last play is a snapshot nobody is
@@ -290,10 +295,7 @@ class YahooFantasyCoordinator(DataUpdateCoordinator[LeagueData]):
             if only is None:
                 self._pending.forget_others(set(live))
             results = await asyncio.gather(
-                *(
-                    self.async_game_plays(plays_id, 1, now=now, game=games[plays_id])
-                    for plays_id in live
-                ),
+                *(self.async_game_plays(plays_id, 1, now=now, game=games[plays_id]) for plays_id in live),
                 return_exceptions=True,
             )
             last_plays = {} if only is None else dict(self._nfl_last_plays)
@@ -539,9 +541,7 @@ class YahooFantasyCoordinator(DataUpdateCoordinator[LeagueData]):
             match = match_relay_play(event, plays, names, pin=pin)
             if match is None:
                 return event
-            return event if event.plays and event.plays[-1] == match else replace(
-                event, plays=(match,)
-            )
+            return event if event.plays and event.plays[-1] == match else replace(event, plays=(match,))
 
         for event in revisable:
             updated = described(event)
@@ -593,15 +593,8 @@ class YahooFantasyCoordinator(DataUpdateCoordinator[LeagueData]):
             return cached.rows[:limit] if cached else []
         if game is None:
             game = self._nfl_game(plays_id)
-        held = frozenset(
-            play.sequence for play in plays if game is not None and period_end_not_reached(play, game)
-        )
-        if (
-            cached is not None
-            and cached.body == body
-            and cached.names is names
-            and cached.held == held
-        ):
+        held = frozenset(play.sequence for play in plays if game is not None and period_end_not_reached(play, game))
+        if cached is not None and cached.body == body and cached.names is names and cached.held == held:
             return cached.rows[:limit]
 
         # Names are shortened for the games card — a dozen rows of "Jahmyr

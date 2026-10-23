@@ -3,10 +3,14 @@
     "step": {
       "user": {
         "title": "Set up Yahoo Fantasy Football",
-        "description": "Enter your league id, or paste the full address of your league page — the id is the number in the URL. Leave the display name blank to use the league's own name. This integration uses Yahoo's anonymous GameChannel feed; availability depends on Yahoo permitting anonymous access.",
+        "description": "Enter your league id or full Yahoo league URL. If anonymous access is refused, optionally supply the Cookie request header from this league endpoint while signed in to Yahoo. It is a login secret: enter it here, not in chat or an issue. Only supported Yahoo session cookies are kept. Leave the display name blank to use the league name.",
         "data": {
           "league_id": "League id or URL",
-          "name": "Display name"
+          "name": "Display name",
+          "yahoo_session_cookie": "Yahoo session cookie (optional)"
+        },
+        "data_description": {
+          "yahoo_session_cookie": "Copy the Cookie request header from the signed-in Yahoo league data request. Do not paste your Yahoo password. Stored in HA configuration; renew it when Yahoo expires the session."
         }
       },
       "team": {
@@ -15,15 +19,26 @@
         "data": {
           "team_id": "Your team"
         }
+      },
+      "reauth_confirm": {
+        "title": "Renew Yahoo session",
+        "description": "Yahoo rejected this session or the account cannot access the league. Paste a fresh Cookie request header from the same league endpoint while signed in to an account with league access. The existing league and team selections will be preserved.",
+        "data": {
+          "yahoo_session_cookie": "Yahoo session cookie"
+        }
       }
     },
     "error": {
       "invalid_league_id": "No league id found. Enter the number from your league URL, or paste the whole address.",
       "cannot_connect": "Could not reach Yahoo, or that league id returned nothing. Check the id and try again.",
-      "yahoo_access_denied": "Yahoo refused access to its league data (HTTP 401/403). Yahoo may require a session cookie or sign-in that this integration does not currently support. Check the project's troubleshooting notes for updates; re-entering the same league id or reinstalling is unlikely to help."
+      "yahoo_access_denied": "Yahoo refused anonymous access (HTTP 401/403). Supply a valid Yahoo session cookie in the optional field, or check the project troubleshooting notes.",
+      "invalid_session_cookie": "Enter a valid Cookie request header containing Yahoo session cookies, without line breaks. Do not enter a password or a full set of HTTP request headers.",
+      "session_rejected": "Yahoo rejected the supplied session or this account cannot access the league. Sign in to Yahoo, verify that this league opens, then copy a fresh Cookie request header."
     },
     "abort": {
-      "already_configured": "This league is already configured."
+      "already_configured": "This league is already configured.",
+      "reauth_successful": "Yahoo session renewed.",
+      "reconfigure_successful": "Yahoo session updated."
     }
   },
   "entity": {
